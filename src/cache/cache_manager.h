@@ -23,6 +23,8 @@ public:
                        bool dotGitTouched);
 
 private:
+    void DrainGraveyard(std::vector<std::unique_ptr<DirWatcher>>& out);
+
     struct Repo {
         std::wstring root;                      // 小写反斜杠，无尾斜杠
         RepoState state;

@@ -8,10 +8,19 @@ namespace gs {
 IpcServer::IpcServer(CacheManager& mgr) : mgr_(mgr) {}
 IpcServer::~IpcServer() { Stop(); }
 
-void IpcServer::Start() { thread_ = std::thread(&IpcServer::ListenerLoop, this); }
+void IpcServer::Start() {
+    if (!clientSlots_) {
+        clientSlots_ = CreateSemaphoreW(nullptr, 64, 64, nullptr);  // 并发请求上限
+    }
+    thread_ = std::thread(&IpcServer::ListenerLoop, this);
+}
 void IpcServer::Stop() {
     stop_ = true;
     if (thread_.joinable()) thread_.join();
+    if (clientSlots_) {
+        CloseHandle(clientSlots_);
+        clientSlots_ = nullptr;
+    }
 }
 
 // 带超时的整段读取（避免连接方只发半帧就挂起）
@@ -47,18 +56,38 @@ void IpcServer::ListenerLoop() {
             Sleep(20);  // 防错误路径忙等
             continue;
         }
-        std::thread([this, h]() { HandleClient(h); }).detach();
+        if (!clientSlots_ || WaitForSingleObject(clientSlots_, 0) != WAIT_OBJECT_0) {
+            uint8_t busy = (uint8_t)StatusKind::Unknown;
+            DWORD written = 0;
+            WriteFile(h, &busy, 1, &written, nullptr);
+            FlushFileBuffers(h);
+            DisconnectNamedPipe(h);
+            CloseHandle(h);
+            continue;
+        }
+        HANDLE slots = clientSlots_;
+        std::thread([this, h, slots]() {
+            HandleClient(h);
+            if (slots) ReleaseSemaphore(slots, 1, nullptr);
+        }).detach();
     }
 }
 
 void IpcServer::HandleClient(HANDLE pipe) {
     RequestHeader hdr{};
     if (!ReadExactly(pipe, &hdr, sizeof(hdr), 2000)) { CloseHandle(pipe); return; }
-    if (hdr.pathLen == 0 || hdr.pathLen > kMaxPathBytes) { CloseHandle(pipe); return; }
+    if ((hdr.type != kIpcQueryStatus && hdr.type != kIpcRegisterRepo) ||
+        hdr.pathLen < sizeof(wchar_t) || hdr.pathLen > kMaxPathBytes ||
+        (hdr.pathLen % sizeof(wchar_t)) != 0) {
+        CloseHandle(pipe);
+        return;
+    }
 
     std::vector<wchar_t> pathBuf(hdr.pathLen / sizeof(wchar_t) + 1, 0);
     if (!ReadExactly(pipe, pathBuf.data(), hdr.pathLen, 2000)) { CloseHandle(pipe); return; }
-    std::wstring path(pathBuf.data());
+    size_t pathChars = hdr.pathLen / sizeof(wchar_t);
+    if (pathChars == 0 || pathBuf[pathChars - 1] != L'\0') { CloseHandle(pipe); return; }
+    std::wstring path(pathBuf.data(), pathChars - 1);
 
     uint8_t resp = (uint8_t)StatusKind::NotRepo;
     if (hdr.type == kIpcQueryStatus) {

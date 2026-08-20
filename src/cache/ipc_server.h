@@ -20,6 +20,7 @@ private:
 
     CacheManager& mgr_;
     std::atomic<bool> stop_{false};
+    HANDLE clientSlots_ = nullptr;
     std::thread thread_;
 };
 
