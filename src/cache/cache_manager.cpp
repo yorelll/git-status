@@ -2,11 +2,21 @@
 #include "../common/pathutil.h"
 #include "../engine/git_status.h"
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 
 namespace gs {
 
 CacheManager::~CacheManager() { Shutdown(); }
+
+void CacheManager::DrainGraveyard(std::vector<std::unique_ptr<DirWatcher>>& out) {
+    std::unique_lock lk(mtx_);
+    if (graveyard_.empty()) return;
+    out.insert(out.end(),
+               std::make_move_iterator(graveyard_.begin()),
+               std::make_move_iterator(graveyard_.end()));
+    graveyard_.clear();
+}
 
 void CacheManager::Shutdown() {
     std::vector<std::unique_ptr<DirWatcher>> watchers;
@@ -29,16 +39,25 @@ CacheManager::Repo* CacheManager::FindRepo(const std::wstring& rootLower) const 
 StatusKind CacheManager::Query(const std::wstring& absPath) const {
     std::wstring p = TrimTrailingSlash(ToLowerW(Backslash(absPath)));
     std::shared_lock lk(mtx_);
+    const Repo* bestRepo = nullptr;
+    size_t bestRootLen = 0;
     for (auto& [root, repo] : repos_) {
-        if (IsPathPrefix(root, p)) {
-            std::wstring rel = (p.size() > root.size()) ? p.substr(root.size() + 1) : L"";
-            return repo->state.StatusFor(rel);
+        if (IsPathPrefix(root, p) && root.size() >= bestRootLen) {
+            bestRepo = repo.get();
+            bestRootLen = root.size();
         }
     }
-    return StatusKind::NotRepo;
+    if (!bestRepo) return StatusKind::NotRepo;
+    std::wstring rel = (p.size() > bestRootLen) ? p.substr(bestRootLen + 1) : L"";
+    return bestRepo->state.StatusFor(rel);
 }
 
 bool CacheManager::RegisterRepo(const std::wstring& root) {
+    // 延迟回收失效 watcher：在非监视回调线程做析构/join，避免积累。
+    std::vector<std::unique_ptr<DirWatcher>> reclaim;
+    DrainGraveyard(reclaim);
+    reclaim.clear();
+
     std::wstring r = TrimTrailingSlash(ToLowerW(Backslash(AbsPath(root))));
     if (r.size() < 3 || r[1] != L':') return false;
     {
