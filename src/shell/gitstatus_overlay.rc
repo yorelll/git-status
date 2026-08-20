@@ -1,0 +1,4 @@
+#include "resource.h"
+
+IDI_CLEAN    ICON "icons/clean.ico"
+IDI_MODIFIED ICON "icons/modified.ico"

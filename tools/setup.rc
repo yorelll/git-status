@@ -1,0 +1,5 @@
+#include "setup_ids.h"
+
+// 资源声明顺序决定索引：DLL 在前(0)，Cache 在后(1)
+PAYLOAD_DLL    RCDATA "bin/GitStatusOverlay.dll"
+PAYLOAD_CACHE  RCDATA "bin/GitStatusCache.exe"
