@@ -17,10 +17,10 @@ void IpcServer::Start() {
 void IpcServer::Stop() {
     stop_ = true;
     if (thread_.joinable()) thread_.join();
-    if (clientSlots_) {
-        CloseHandle(clientSlots_);
-        clientSlots_ = nullptr;
-    }
+    // 注意：不能在此 CloseHandle(clientSlots_)。detached 处理线程在 Stop() 后仍可能
+    // 调用 ReleaseSemaphore，提前关闭句柄会造成 use-after-close（句柄可能被系统复用）。
+    // 本进程是生命周期单例（由 taskkill 终止），信号量句柄由系统在进程退出时统一回收，
+    // 泄漏一个句柄无害；这也使 Stop() 后再 Start() 能安全复用同一信号量。
 }
 
 // 带超时的整段读取（避免连接方只发半帧就挂起）
