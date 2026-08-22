@@ -59,10 +59,15 @@ bool HasDotGit(const std::wstring& dir) {
 }
 
 std::wstring AbsPath(const std::wstring& p) {
-    wchar_t buf[MAX_PATH * 2] = {0};
-    DWORD len = GetFullPathNameW(p.c_str(), MAX_PATH * 2, buf, nullptr);
-    if (len == 0 || len >= MAX_PATH * 2) return p;
-    return std::wstring(buf);
+    // 两段式调用：先取所需长度再分配，避免固定缓冲对超长路径（深层 node_modules 等）
+    // 静默失败——失败时返回未规范化原串会导致缓存 key 大小写/斜杠不一致、匹配落空。
+    DWORD need = GetFullPathNameW(p.c_str(), 0, nullptr, nullptr);
+    if (need == 0 || need > 32768) return p;
+    std::wstring buf(need, L'\0');
+    DWORD n = GetFullPathNameW(p.c_str(), need, buf.data(), nullptr);
+    if (n == 0 || n >= need) return p;
+    buf.resize(n);
+    return buf;
 }
 
 bool IsDirectory(const std::wstring& p) {

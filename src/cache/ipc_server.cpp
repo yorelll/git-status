@@ -76,6 +76,7 @@ void IpcServer::ListenerLoop() {
 void IpcServer::HandleClient(HANDLE pipe) {
     RequestHeader hdr{};
     if (!ReadExactly(pipe, &hdr, sizeof(hdr), 2000)) { CloseHandle(pipe); return; }
+
     if ((hdr.type != kIpcQueryStatus && hdr.type != kIpcRegisterRepo) ||
         hdr.pathLen < sizeof(wchar_t) || hdr.pathLen > kMaxPathBytes ||
         (hdr.pathLen % sizeof(wchar_t)) != 0) {

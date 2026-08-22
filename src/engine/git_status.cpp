@@ -54,38 +54,32 @@ static bool RunGit(const std::wstring& cmdLine, std::string& outBytes, std::wstr
         return false;
     }
 
-    char buf[8192];
-    OVERLAPPED ov{};
-    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    // CreatePipe 返回的是同步句柄（无 FILE_FLAG_OVERLAPPED）：对它传 OVERLAPPED 属 API
+    // 未定义行为，且同步 ReadFile 会无限阻塞、使超时彻底失效。改为 PeekNamedPipe 轮询
+    // + 总超时：有数据就读，5s 无进展则杀掉 git 防挂死。
+    constexpr DWORD kTotalTimeoutMs = 5000;
+    const DWORD startTick = GetTickCount();
     std::string out;
-    bool done = false;
-    while (!done) {
-        DWORD n = 0;
-        ResetEvent(ov.hEvent);
-        if (!ReadFile(hRead, buf, sizeof(buf), &n, &ov)) {
-            DWORD e = GetLastError();
-            if (e == ERROR_IO_PENDING) {
-                DWORD wr = WaitForSingleObject(ov.hEvent, 5000);
-                if (wr != WAIT_OBJECT_0 || !GetOverlappedResult(hRead, &ov, &n, FALSE)) {
-                    TerminateProcess(pi.hProcess, 1);  // 读超时 → 杀掉避免泄漏
-                    done = true;
-                } else if (n == 0) {
-                    done = true;
-                } else {
-                    out.append(buf, n);
-                }
-            } else if (e == ERROR_BROKEN_PIPE || e == ERROR_HANDLE_EOF) {
-                done = true;
-            } else {
-                done = true;
-            }
-        } else if (n == 0) {
-            done = true;
-        } else {
-            out.append(buf, n);
+    bool ioFail = false;
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr)) {
+            break;  // 写端已关（ERROR_BROKEN_PIPE）= git 正常结束；其它错误也按 EOF 处理
         }
+        if (avail > 0) {
+            char buf[8192];
+            DWORD n = 0;
+            if (!ReadFile(hRead, buf, sizeof(buf), &n, nullptr) || n == 0) break;
+            out.append(buf, n);
+            continue;
+        }
+        if (GetTickCount() - startTick > kTotalTimeoutMs) {  // 减法比较，回转安全
+            TerminateProcess(pi.hProcess, 1);  // 超时 → 杀掉避免泄漏
+            ioFail = true;
+            break;
+        }
+        Sleep(5);
     }
-    CloseHandle(ov.hEvent);
     CloseHandle(hRead);
 
     WaitForSingleObject(pi.hProcess, 5000);
@@ -94,7 +88,7 @@ static bool RunGit(const std::wstring& cmdLine, std::string& outBytes, std::wstr
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    if (exitCode != 0) {
+    if (ioFail || exitCode != 0) {
         errMsg = L"git 退出码 " + std::to_wstring(exitCode) + L"：" + Utf8ToWide(out);
         return false;
     }

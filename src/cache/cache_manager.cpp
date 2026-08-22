@@ -36,20 +36,34 @@ CacheManager::Repo* CacheManager::FindRepo(const std::wstring& rootLower) const 
     return it == repos_.end() ? nullptr : it->second.get();
 }
 
-StatusKind CacheManager::Query(const std::wstring& absPath) const {
+StatusKind CacheManager::Query(const std::wstring& absPath) {
     std::wstring p = TrimTrailingSlash(ToLowerW(Backslash(absPath)));
-    std::shared_lock lk(mtx_);
-    const Repo* bestRepo = nullptr;
-    size_t bestRootLen = 0;
-    for (auto& [root, repo] : repos_) {
-        if (IsPathPrefix(root, p) && root.size() >= bestRootLen) {
-            bestRepo = repo.get();
-            bestRootLen = root.size();
+    StatusKind st;
+    {
+        std::shared_lock lk(mtx_);
+        const Repo* bestRepo = nullptr;
+        size_t bestRootLen = 0;
+        for (auto& [root, repo] : repos_) {
+            if (IsPathPrefix(root, p) && root.size() >= bestRootLen) {
+                bestRepo = repo.get();
+                bestRootLen = root.size();
+            }
+        }
+        if (!bestRepo) {
+            st = StatusKind::NotRepo;
+        } else {
+            std::wstring rel = (p.size() > bestRootLen) ? p.substr(bestRootLen + 1) : L"";
+            st = bestRepo->state.StatusFor(rel);
         }
     }
-    if (!bestRepo) return StatusKind::NotRepo;
-    std::wstring rel = (p.size() > bestRootLen) ? p.substr(bestRootLen + 1) : L"";
-    return bestRepo->state.StatusFor(rel);
+    // 锁外顺手回收死 watcher（Query 只在 IPC 线程执行，绝不会是 watcher 回调线程，
+    // 析构/join 无自死锁风险；graveyard 为空时仅多一次极短的锁往返）。
+    // 注意不能在持有 shared_lock 时调用 DrainGraveyard（内部取 unique_lock，同线程
+    // 先 shared 后 unique 属死锁）。
+    std::vector<std::unique_ptr<DirWatcher>> reclaim;
+    DrainGraveyard(reclaim);
+    reclaim.clear();
+    return st;
 }
 
 bool CacheManager::RegisterRepo(const std::wstring& root) {

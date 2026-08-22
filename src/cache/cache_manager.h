@@ -17,7 +17,7 @@ public:
     ~CacheManager();
 
     void Shutdown();
-    StatusKind Query(const std::wstring& absPath) const;
+    StatusKind Query(const std::wstring& absPath);  // 非 const：顺路排空 graveyard
     bool RegisterRepo(const std::wstring& root);
     void OnRepoChanged(const std::wstring& root, const std::vector<std::wstring>& relEvents,
                        bool dotGitTouched);

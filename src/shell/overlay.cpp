@@ -77,7 +77,11 @@ bool CachedQueryStatus(const std::wstring& absPath, StatusKind& out) {
 }
 
 // ── COverlayIcon ─────────────────────────────────────
-COverlayIcon::COverlayIcon(OverlayKind kind) : kind_(kind) {}
+COverlayIcon::COverlayIcon(OverlayKind kind) : kind_(kind) {
+    // 存活对象计入模块锁：DllCanUnloadNow 只有在无锁且无存活对象时才允许卸载，
+    // 否则 Explorer 在对象仍被引用时卸载 DLL 会直接崩溃。
+    InterlockedIncrement(&g_moduleLocks);
+}
 
 STDMETHODIMP COverlayIcon::QueryInterface(REFIID riid, void** ppv) {
     if (riid == IID_IUnknown || riid == IID_IShellIconOverlayIdentifier) {
@@ -91,7 +95,10 @@ STDMETHODIMP COverlayIcon::QueryInterface(REFIID riid, void** ppv) {
 STDMETHODIMP_(ULONG) COverlayIcon::AddRef() { return InterlockedIncrement(&refs_); }
 STDMETHODIMP_(ULONG) COverlayIcon::Release() {
     LONG r = InterlockedDecrement(&refs_);
-    if (r == 0) delete this;
+    if (r == 0) {
+        InterlockedDecrement(&g_moduleLocks);  // 与构造时的计数配对
+        delete this;
+    }
     return (ULONG)r;
 }
 
@@ -126,7 +133,9 @@ STDMETHODIMP COverlayIcon::IsMemberOf(PCWSTR pwszPath, DWORD /*dwAttrib*/) {
 }
 
 // ── COverlayFactory ──────────────────────────────────
-COverlayFactory::COverlayFactory(OverlayKind kind) : kind_(kind) {}
+COverlayFactory::COverlayFactory(OverlayKind kind) : kind_(kind) {
+    InterlockedIncrement(&g_moduleLocks);  // 同上：存活对象计入模块锁
+}
 
 STDMETHODIMP COverlayFactory::QueryInterface(REFIID riid, void** ppv) {
     if (riid == IID_IUnknown || riid == IID_IClassFactory) {
@@ -140,7 +149,10 @@ STDMETHODIMP COverlayFactory::QueryInterface(REFIID riid, void** ppv) {
 STDMETHODIMP_(ULONG) COverlayFactory::AddRef() { return InterlockedIncrement(&refs_); }
 STDMETHODIMP_(ULONG) COverlayFactory::Release() {
     LONG r = InterlockedDecrement(&refs_);
-    if (r == 0) delete this;
+    if (r == 0) {
+        InterlockedDecrement(&g_moduleLocks);
+        delete this;
+    }
     return (ULONG)r;
 }
 
