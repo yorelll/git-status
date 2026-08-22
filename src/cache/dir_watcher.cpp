@@ -50,7 +50,16 @@ void DirWatcher::ThreadMain() {
         DWORD wr = WaitForMultipleObjects(2, waiters, FALSE, INFINITE);
         if (wr == WAIT_OBJECT_0 || wr == WAIT_FAILED) break;  // stop 或出错
         DWORD transferred = 0;
-        if (!GetOverlappedResult(dirHandle_, &ov, &transferred, FALSE)) break;
+        if (!GetOverlappedResult(dirHandle_, &ov, &transferred, FALSE)) {
+            // 缓冲区溢出（ERROR_NOTIFY_ENUM_DIR）：本批事件丢失，必须强制全量重扫兜底，
+            // 且绝不能退出线程——退出会让该仓库的状态从此静默失效。
+            if (GetLastError() == ERROR_NOTIFY_ENUM_DIR) {
+                cb_(root_, {}, true);
+                continue;
+            }
+            Sleep(50);   // 其它瞬态错误：重新投递读请求
+            continue;
+        }
         if (transferred == 0) continue;
 
         std::vector<std::wstring> pending;
@@ -62,7 +71,12 @@ void DirWatcher::ThreadMain() {
             if (!name.empty()) {
                 std::wstring rel = ToLowerW(Backslash(name));
                 pending.push_back(rel);
-                if (rel == L".git" || rel.rfind(L".git\\", 0) == 0) dotGit = true;
+                // index.lock 是 git 操作的瞬态锁文件（我们自己的扫描在 --no-optional-locks
+                // 前也会制造它），把它算作变更会造成"扫描→锁文件事件→再扫描"死循环。
+                if ((rel == L".git" || rel.rfind(L".git\\", 0) == 0) &&
+                    rel != L".git\\index.lock") {
+                    dotGit = true;
+                }
             }
             if (fni->NextEntryOffset == 0) break;
             fni = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(

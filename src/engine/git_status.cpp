@@ -20,7 +20,9 @@ static std::wstring QuoteArg(const std::wstring& s) {
 
 static std::wstring BuildStatusCmd(const std::wstring& repoRoot,
                                    const std::vector<std::wstring>& pathspec) {
-    std::wstring cmd = L"git --literal-pathspecs -c core.quotePath=true -C " +
+    // --no-optional-locks 至关重要：裸 git status 会创建/删除 .git/index.lock 并回写
+    // .git/index，而这些文件事件又被 DirWatcher 捕获 → 触发再次全量重扫 → 自反馈死循环。
+    std::wstring cmd = L"git --no-optional-locks --literal-pathspecs -c core.quotePath=true -C " +
                        QuoteArg(repoRoot) + L" status --porcelain -z --untracked-files=all";
     if (!pathspec.empty()) {
         cmd += L" --";

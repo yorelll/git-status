@@ -29,6 +29,7 @@ private:
         std::wstring root;                      // 小写反斜杠，无尾斜杠
         RepoState state;
         std::unique_ptr<DirWatcher> watcher;
+        DWORD lastFullScanMs = 0;               // 上次全量重扫时刻（节流用，GetTickCount 回转安全）
     };
     Repo* FindRepo(const std::wstring& rootLower) const;
     void FullRescan(const std::wstring& rootLower);

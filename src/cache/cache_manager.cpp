@@ -109,12 +109,24 @@ std::vector<std::wstring> CacheManager::TopMostEvents(const std::vector<std::wst
 }
 
 void CacheManager::FullRescan(const std::wstring& rootLower) {
+    // 节流兜底：距上次全量扫描不足 2s 则丢弃本次事件。即使上游（--no-optional-locks、
+    // index.lock 排除）全部失效，这里也保证任何自反馈重扫风暴最多 0.5 次/秒/仓库。
+    DWORD now = GetTickCount();
+    {
+        std::shared_lock lk(mtx_);
+        Repo* r = FindRepo(rootLower);
+        if (!r) return;
+        if (now - r->lastFullScanMs < 2000) return;  // 减法比较，回转安全
+    }
     std::vector<GitDirtyPath> dirty;
     std::wstring err;
     if (!GitStatusScan(rootLower, {}, dirty, err)) return;
     std::unique_lock lk(mtx_);
     Repo* r = FindRepo(rootLower);
-    if (r) r->state.Reset(dirty);
+    if (r) {
+        r->state.Reset(dirty);
+        r->lastFullScanMs = now;
+    }
 }
 
 void CacheManager::IncrementalUpdate(const std::wstring& rootLower,

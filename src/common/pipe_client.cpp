@@ -58,6 +58,9 @@ static bool OverlappedIo(HANDLE h, bool write, void* buf, DWORD len, DWORD timeo
         DWORD r = WaitForSingleObject(ov.hEvent, timeoutMs);
         if (r != WAIT_OBJECT_0) {
             CancelIo(h);
+            // 等内核完成取消后再关事件句柄：CancelIo 返回时取消可能仍在途，
+            // 立即关闭会让完成例程引用已释放的 OVERLAPPED/事件对象。
+            WaitForSingleObject(ov.hEvent, 200);
             CloseHandle(ov.hEvent);
             return false;
         }
