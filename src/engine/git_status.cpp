@@ -55,10 +55,15 @@ static bool RunGit(const std::wstring& cmdLine, std::string& outBytes, std::wstr
     }
 
     // CreatePipe 返回的是同步句柄（无 FILE_FLAG_OVERLAPPED）：对它传 OVERLAPPED 属 API
-    // 未定义行为，且同步 ReadFile 会无限阻塞、使超时彻底失效。改为 PeekNamedPipe 轮询
-    // + 总超时：有数据就读，5s 无进展则杀掉 git 防挂死。
-    constexpr DWORD kTotalTimeoutMs = 5000;
+    // 未定义行为，且同步 ReadFile 会无限阻塞、使超时彻底失效。改为 PeekNamedPipe 轮询，
+    // 双闸超时：
+    //   - 空闲 30s：读到数据即重置。注意 porcelain 输出走 stdio 全缓冲，大仓库可能
+    //     整个扫描期零字节输出、结束才一次吐完——所以不能只靠空闲判定"活着"。
+    //   - 总 90s：容纳 monorepo/-uall 的合法慢扫描（10~60s 常见），兼防病态无限占用。
+    constexpr DWORD kIdleTimeoutMs = 30000;
+    constexpr DWORD kTotalTimeoutMs = 90000;
     const DWORD startTick = GetTickCount();
+    DWORD lastDataTick = startTick;
     std::string out;
     bool ioFail = false;
     for (;;) {
@@ -71,14 +76,16 @@ static bool RunGit(const std::wstring& cmdLine, std::string& outBytes, std::wstr
             DWORD n = 0;
             if (!ReadFile(hRead, buf, sizeof(buf), &n, nullptr) || n == 0) break;
             out.append(buf, n);
+            lastDataTick = GetTickCount();  // 有数据流动 → git 活着
             continue;
         }
-        if (GetTickCount() - startTick > kTotalTimeoutMs) {  // 减法比较，回转安全
-            TerminateProcess(pi.hProcess, 1);  // 超时 → 杀掉避免泄漏
+        DWORD now = GetTickCount();  // 减法比较，回转安全
+        if (now - lastDataTick > kIdleTimeoutMs || now - startTick > kTotalTimeoutMs) {
+            TerminateProcess(pi.hProcess, 1);  // 真挂死/病态 → 杀掉避免泄漏
             ioFail = true;
             break;
         }
-        Sleep(5);
+        Sleep(20);  // 轮询间隔：响应性无差别，CPU 更省
     }
     CloseHandle(hRead);
 
